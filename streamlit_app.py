@@ -11,10 +11,10 @@ def audit_layered_v1_1(row, init_score):
     try:
         # 基础数据获取
         seq_str = str(row['全部连击（每张手牌的连击数）'])
-        seq = [int(x) for x in seq_str.split(',')]
+        seq = [int(x.strip()) for x in seq_str.split(',') if x.strip() != ""]
         desk_init = row['初始桌面牌']
         difficulty = row['难度']
-        actual_result = str(row['实际结果']) # 预期包含 "胜利" 或 "失败"
+        actual_result = str(row['实际结果'])
     except:
         return 0, "拒绝", "解析失败", "数据格式异常", "解析失败"
 
@@ -29,7 +29,7 @@ def audit_layered_v1_1(row, init_score):
     if any(x >= 3 for x in seq[-5:]):
         score += 5
         score_reasons.append("尾部收割(+5)")
-    if len(seq) > 0 and max(seq) in seq[6:]:
+    if len(seq) >= 7 and max(seq) in seq[6:]:
         score += 5
         score_reasons.append("逆风翻盘(+5)")
 
@@ -56,7 +56,7 @@ def audit_layered_v1_1(row, init_score):
     for i in range(len(seq) - 3):
         window = seq[i:i+4]
         if len(window) >= 4 and window.count(0) >= 2:
-            p = -25 if i <= 2 else -20 # 开局 Index 0-2 额外惩罚
+            p = -25 if i <= 2 else -20  # 开局 Index 0-2 额外惩罚
             score += p
             score_reasons.append(f"3级枯竭" + ("(开局)" if i <= 2 else "") + f"({p})")
             found_suppression = True
@@ -77,20 +77,17 @@ def audit_layered_v1_1(row, init_score):
 
     # --- 第二层：红线判定层 (Red Line Tagging) ---
     red_tags = []
-    
-    # 体验红线
     if max(seq) >= desk_init * 0.4: red_tags.append("数值崩坏")
     if max_con >= 7: red_tags.append("自动化局(L3)")
     if max(seq) < 3: red_tags.append("全局枯竭")
     
-    # 逻辑违逆红线 (新补充：双向判定)
-    win_difficulties = [10, 20, 30]
-    lose_difficulties = [40, 50, 60]
-    
-    if difficulty in win_difficulties and "失败" in actual_result:
-        red_tags.append("逻辑违逆(应胜实败)")
-    elif difficulty in lose_difficulties and "胜利" in actual_result:
-        red_tags.append("逻辑违逆(应败实胜)")
+    # 双向逻辑违逆判定
+    win_list = [10, 20, 30]
+    lose_list = [40, 50, 60]
+    if difficulty in win_list and "失败" in actual_result:
+        red_tags.append("应胜实败")
+    elif difficulty in lose_list and "胜利" in actual_result:
+        red_tags.append("应败实胜")
     
     red_label = ",".join(red_tags) if red_tags else "无"
 
@@ -112,29 +109,4 @@ with st.sidebar:
     st.header("⚙️ 审计参数")
     init_val = st.slider("初始基准分", 0, 100, 60)
     st.divider()
-    uploaded_file = st.file_uploader("上传 Excel 或 CSV 文件", type=["xlsx", "csv"])
-
-# 4. 主页面逻辑
-if uploaded_file:
-    if uploaded_file.name.endswith('.xlsx'):
-        df = pd.read_excel(uploaded_file)
-    else:
-        df = pd.read_csv(uploaded_file)
-    
-    st.success(f"成功读取 {len(df)} 条数据")
-
-    with st.spinner('执行分层审计逻辑中...'):
-        audit_res = df.apply(lambda r: pd.Series(audit_layered_v1_1(r, init_val)), axis=1)
-        df[['逻辑得分', '审计结果', '红线详情', '得分构成', '最终结论理由']] = audit_res
-
-    # A. 准入排行榜
-    st.subheader("📊 解集准入排行榜 (聚合统计)")
-    summary = df.groupby(['解集ID', '难度']).agg(
-        μ_逻辑得分=('逻辑得分', 'mean'),
-        σ2_得分方差=('逻辑得分', 'var'),
-        红线率=('红线详情', lambda x: (x != "无").mean())
-    ).reset_index()
-
-    # 按照说明书准入筛选
-    summary['准入判定'] = summary.apply(
-        lambda r: "✅ 准入" if r['μ_逻辑得分'] >= 50 and r['σ2_得分方差'] <= 15 and r['红线率'] < 0.15 else "❌ 拒绝", axis
+    uploaded_file = st.file
