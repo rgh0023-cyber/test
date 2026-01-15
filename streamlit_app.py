@@ -3,20 +3,22 @@ import pandas as pd
 import numpy as np
 
 # 1. 页面基本配置
-st.set_page_config(page_title="关卡体验审计 V1.1 (分层判定版)", layout="wide")
+st.set_page_config(page_title="关卡体验审计 V1.1 (最终逻辑修订版)", layout="wide")
 st.title("🎴 Tripeaks 关卡体验自动化审计系统 V1.1")
 
 # 2. 核心逻辑：分层审计函数
 def audit_layered_v1_1(row, init_score):
     try:
-        # 获取序列
+        # 基础数据获取
         seq_str = str(row['全部连击（每张手牌的连击数）'])
         seq = [int(x) for x in seq_str.split(',')]
         desk_init = row['初始桌面牌']
+        difficulty = row['难度']
+        actual_result = str(row['实际结果']) # 预期包含 "胜利" 或 "失败"
     except:
-        return 0, "拒绝", "解析失败", "数据格式异常"
+        return 0, "拒绝", "解析失败", "数据格式异常", "解析失败"
 
-    # --- 第一层：逻辑得分层 (Score Calculation) ---
+    # --- 第一层：逻辑得分层 (Experience Scoring) ---
     score = init_score
     score_reasons = []
 
@@ -27,11 +29,11 @@ def audit_layered_v1_1(row, init_score):
     if any(x >= 3 for x in seq[-5:]):
         score += 5
         score_reasons.append("尾部收割(+5)")
-    if max(seq) in seq[6:]:
+    if len(seq) > 0 and max(seq) in seq[6:]:
         score += 5
         score_reasons.append("逆风翻盘(+5)")
 
-    # B. 抑制项判定 (L2 > L1 互斥)
+    # B. 抑制项判定 (程度互斥：L2 > L1)
     con_list = []
     cur = 0
     for x in seq:
@@ -49,18 +51,16 @@ def audit_layered_v1_1(row, init_score):
         score -= 10
         score_reasons.append("L1高频投喂(-10)")
 
-    # C. 抑制项判定 (3级 > 2级 > 1级 互斥)
+    # C. 抑制项判定 (区间互斥：3级 > 2级 > 1级)
     found_suppression = False
-    # 优先检测3级
     for i in range(len(seq) - 3):
         window = seq[i:i+4]
         if len(window) >= 4 and window.count(0) >= 2:
-            p = -25 if i <= 2 else -20
+            p = -25 if i <= 2 else -20 # 开局 Index 0-2 额外惩罚
             score += p
             score_reasons.append(f"3级枯竭" + ("(开局)" if i <= 2 else "") + f"({p})")
             found_suppression = True
             break 
-    # 若无3级，检测2级和1级
     if not found_suppression:
         for i in range(len(seq) - 2):
             window3 = seq[i:i+3]
@@ -77,13 +77,24 @@ def audit_layered_v1_1(row, init_score):
 
     # --- 第二层：红线判定层 (Red Line Tagging) ---
     red_tags = []
+    
+    # 体验红线
     if max(seq) >= desk_init * 0.4: red_tags.append("数值崩坏")
     if max_con >= 7: red_tags.append("自动化局(L3)")
     if max(seq) < 3: red_tags.append("全局枯竭")
     
+    # 逻辑违逆红线 (新补充：双向判定)
+    win_difficulties = [10, 20, 30]
+    lose_difficulties = [40, 50, 60]
+    
+    if difficulty in win_difficulties and "失败" in actual_result:
+        red_tags.append("逻辑违逆(应胜实败)")
+    elif difficulty in lose_difficulties and "胜利" in actual_result:
+        red_tags.append("逻辑违逆(应败实胜)")
+    
     red_label = ",".join(red_tags) if red_tags else "无"
 
-    # --- 第三层：综合判定层 (Final Decision) ---
+    # --- 第三层：综合判定层 ---
     final_status = "通过"
     if red_tags:
         final_status = "拒绝"
@@ -105,7 +116,6 @@ with st.sidebar:
 
 # 4. 主页面逻辑
 if uploaded_file:
-    # 读取文件
     if uploaded_file.name.endswith('.xlsx'):
         df = pd.read_excel(uploaded_file)
     else:
@@ -113,34 +123,18 @@ if uploaded_file:
     
     st.success(f"成功读取 {len(df)} 条数据")
 
-    # 执行审计 (分层返回结果)
-    with st.spinner('分层判定计算中...'):
+    with st.spinner('执行分层审计逻辑中...'):
         audit_res = df.apply(lambda r: pd.Series(audit_layered_v1_1(r, init_val)), axis=1)
         df[['逻辑得分', '审计结果', '红线详情', '得分构成', '最终结论理由']] = audit_res
 
     # A. 准入排行榜
-    st.subheader("📊 解集准入排行榜")
+    st.subheader("📊 解集准入排行榜 (聚合统计)")
     summary = df.groupby(['解集ID', '难度']).agg(
         μ_逻辑得分=('逻辑得分', 'mean'),
         σ2_得分方差=('逻辑得分', 'var'),
         红线率=('红线详情', lambda x: (x != "无").mean())
     ).reset_index()
 
+    # 按照说明书准入筛选
     summary['准入判定'] = summary.apply(
-        lambda r: "✅ 准入" if r['μ_逻辑得分'] >= 45 and r['σ2_得分方差'] <= 20 and r['红线率'] < 0.15 else "❌ 拒绝", axis=1
-    )
-    st.dataframe(summary.style.highlight_max(axis=0, subset=['μ_逻辑得分']), use_container_width=True)
-
-    # B. 详细审计明细 (展示得分与红线的分层)
-    st.divider()
-    st.subheader("🔍 详细审计明细 (前100条)")
-    display_cols = ['解集ID', '测试轮次', '难度', '逻辑得分', '红线详情', '审计结果', '得分构成', '最终结论理由']
-    st.dataframe(df[display_cols].head(100), use_container_width=True)
-
-    # C. 数据导出
-    csv = df.to_csv(index=False).encode('utf_8_sig')
-    st.download_button("📥 下载完整审计报告", csv, "Audit_Report.csv", "text/csv")
-
-else:
-    st.info("请在左侧上传数据文件。系统将根据 初始分60 进行逻辑打分，并独立扫描红线。")
-
+        lambda r: "✅ 准入" if r['μ_逻辑得分'] >= 50 and r['σ2_得分方差'] <= 15 and r['红线率'] < 0.15 else "❌ 拒绝", axis
