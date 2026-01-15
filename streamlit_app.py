@@ -127,7 +127,7 @@ if uploaded_file:
     ).reset_index()
 
     summary['准入判定'] = summary.apply(
-        lambda r: "✅ 准入" if r['μ_逻辑得分'] >= 50 and r['σ2_得分方差'] <= 15 and r['红线率'] < 0.15 else "❌ 拒绝", axis=1
+        lambda r: "✅ 准入" if r['μ_逻辑得分'] >= 45 and r['σ2_得分方差'] <= 20 and r['红线率'] < 0.15 else "❌ 拒绝", axis=1
     )
     st.dataframe(summary.style.highlight_max(axis=0, subset=['μ_逻辑得分']), use_container_width=True)
 
@@ -143,3 +143,4 @@ if uploaded_file:
 
 else:
     st.info("请在左侧上传数据文件。系统将根据 初始分60 进行逻辑打分，并独立扫描红线。")
+
