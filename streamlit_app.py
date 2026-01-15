@@ -2,28 +2,36 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-# 1. 页面配置
-st.set_page_config(page_title="关卡审计 V1.1", layout="wide")
+# 1. 页面基本配置
+st.set_page_config(page_title="关卡体验审计 V1.1 (分层判定版)", layout="wide")
 st.title("🎴 Tripeaks 关卡体验自动化审计系统 V1.1")
 
-# 2. 核心逻辑函数定义
-def audit_logic_v1_1(row, init_score):
+# 2. 核心逻辑：分层审计函数
+def audit_layered_v1_1(row, init_score):
     try:
-        # 将序列字符串转为数字列表
-        seq = [int(x) for x in str(row['全部连击（每张手牌的连击数）']).split(',')]
+        # 获取序列
+        seq_str = str(row['全部连击（每张手牌的连击数）'])
+        seq = [int(x) for x in seq_str.split(',')]
+        desk_init = row['初始桌面牌']
     except:
-        return 0, "拒绝", "序列格式解析失败"
-    
-    desk_init = row['初始桌面牌']
-    score = init_score
-    reasons = []
+        return 0, "拒绝", "解析失败", "数据格式异常"
 
-    # --- 红线判定 (一票否决) ---
-    max_c = max(seq)
-    if max_c >= desk_init * 0.4:
-        return 0, "拒绝", f"红线：数值崩坏(Max:{max_c})"
-    
-    # 连续性计算 (用于投喂等级判定)
+    # --- 第一层：逻辑得分层 (Score Calculation) ---
+    score = init_score
+    score_reasons = []
+
+    # A. 正向加分
+    if sum(seq[:3]) >= 4:
+        score += 5
+        score_reasons.append("开局破冰(+5)")
+    if any(x >= 3 for x in seq[-5:]):
+        score += 5
+        score_reasons.append("尾部收割(+5)")
+    if max(seq) in seq[6:]:
+        score += 5
+        score_reasons.append("逆风翻盘(+5)")
+
+    # B. 抑制项判定 (L2 > L1 互斥)
     con_list = []
     cur = 0
     for x in seq:
@@ -34,98 +42,104 @@ def audit_logic_v1_1(row, init_score):
     if cur > 0: con_list.append(cur)
     max_con = max(con_list) if con_list else 0
 
-    if max_con >= 7: return 0, "拒绝", "红线：自动化局(L3)"
-    if max_c < 3: return 0, "拒绝", "红线：全局枯竭"
-
-    # --- 投喂项判定 (L2 > L1 互斥) ---
     if 5 <= max_con <= 6:
         score -= 20
-        reasons.append("L2过度投喂")
+        score_reasons.append("L2过度投喂(-20)")
     elif con_list.count(4) >= 3:
         score -= 10
-        reasons.append("L1高频投喂")
+        score_reasons.append("L1高频投喂(-10)")
 
-    # --- 心流抑制项判定 (3级 > 2级 > 1级 互斥) ---
+    # C. 抑制项判定 (3级 > 2级 > 1级 互斥)
     found_suppression = False
+    # 优先检测3级
     for i in range(len(seq) - 3):
         window = seq[i:i+4]
         if len(window) >= 4 and window.count(0) >= 2:
             p = -25 if i <= 2 else -20
             score += p
-            reasons.append(f"3级枯竭" + ("(开局)" if i <= 2 else ""))
+            score_reasons.append(f"3级枯竭" + ("(开局)" if i <= 2 else "") + f"({p})")
             found_suppression = True
             break 
-            
+    # 若无3级，检测2级和1级
     if not found_suppression:
         for i in range(len(seq) - 2):
-            w3 = seq[i:i+3]
-            if len(w3) >= 3:
-                unconn3 = w3.count(0)
+            window3 = seq[i:i+3]
+            if len(window3) >= 3:
+                unconn3 = window3.count(0)
                 if 1 <= unconn3 <= 2:
                     score -= 12
-                    reasons.append("2级阻塞")
+                    score_reasons.append("2级阻塞(-12)")
                     break
-                elif all(0 < x <= 2 for x in w3):
+                elif all(0 < x <= 2 for x in window3):
                     score -= 5
-                    reasons.append("1级平庸")
+                    score_reasons.append("1级平庸(-5)")
                     break
 
-    # --- 正向加分项 ---
-    if sum(seq[:3]) >= 4: score += 5
-    if any(x >= 3 for x in seq[-5:]): score += 5
-    if max_c in seq[6:]: score += 5
+    # --- 第二层：红线判定层 (Red Line Tagging) ---
+    red_tags = []
+    if max(seq) >= desk_init * 0.4: red_tags.append("数值崩坏")
+    if max_con >= 7: red_tags.append("自动化局(L3)")
+    if max(seq) < 3: red_tags.append("全局枯竭")
+    
+    red_label = ",".join(red_tags) if red_tags else "无"
 
-    return score, "通过", "|".join(reasons) if reasons else "正常"
+    # --- 第三层：综合判定层 (Final Decision) ---
+    final_status = "通过"
+    if red_tags:
+        final_status = "拒绝"
+        final_reason = f"触发红线: {red_label}"
+    elif score < 50:
+        final_status = "拒绝"
+        final_reason = "体验得分低于50分"
+    else:
+        final_reason = "符合准入标准"
 
-# 3. 侧边栏配置
+    return score, final_status, red_label, " | ".join(score_reasons), final_reason
+
+# 3. Streamlit 侧边栏
 with st.sidebar:
-    st.header("⚙️ 参数配置")
+    st.header("⚙️ 审计参数")
     init_val = st.slider("初始基准分", 0, 100, 60)
     st.divider()
-    uploaded_file = st.file_uploader("📂 上传跑关文件 (Excel/CSV)", type=["xlsx", "csv"])
+    uploaded_file = st.file_uploader("上传 Excel 或 CSV 文件", type=["xlsx", "csv"])
 
-# 4. 运行逻辑
+# 4. 主页面逻辑
 if uploaded_file:
     # 读取文件
-    if "xlsx" in uploaded_file.name:
+    if uploaded_file.name.endswith('.xlsx'):
         df = pd.read_excel(uploaded_file)
     else:
         df = pd.read_csv(uploaded_file)
     
-    st.success(f"文件上传成功！共识别 {len(df)} 条数据。")
+    st.success(f"成功读取 {len(df)} 条数据")
 
-    # 执行审计逻辑并生成新列
-    with st.spinner('审计算法运行中...'):
-        results = df.apply(lambda r: pd.Series(audit_logic_v1_1(r, init_val)), axis=1)
-        df[['审计得分', '审计结果', '详细理由']] = results
+    # 执行审计 (分层返回结果)
+    with st.spinner('分层判定计算中...'):
+        audit_res = df.apply(lambda r: pd.Series(audit_layered_v1_1(r, init_val)), axis=1)
+        df[['逻辑得分', '审计结果', '红线详情', '得分构成', '最终结论理由']] = audit_res
 
-    # 5. 聚合汇总表 (修正了变量名不匹配问题)
-    st.subheader("📊 解集准入概览")
-    
-    summary_df = df.groupby(['解集ID', '难度']).agg(
-        得分均值=('审计得分', 'mean'),
-        得分方差=('审计得分', 'var'),
-        红线率=('审计结果', lambda x: (x == "拒绝").mean())
+    # A. 准入排行榜
+    st.subheader("📊 解集准入排行榜")
+    summary = df.groupby(['解集ID', '难度']).agg(
+        μ_逻辑得分=('逻辑得分', 'mean'),
+        σ2_得分方差=('逻辑得分', 'var'),
+        红线率=('红线详情', lambda x: (x != "无").mean())
     ).reset_index()
-    
-    # 准入规则判定
-    summary_df['最终结论'] = summary_df.apply(
-        lambda r: "✅ 准入" if r['得分均值'] >= 50 and r['得分方差'] <= 15 and r['红线率'] < 0.15 else "❌ 拒绝", 
-        axis=1
+
+    summary['准入判定'] = summary.apply(
+        lambda r: "✅ 准入" if r['μ_逻辑得分'] >= 50 and r['σ2_得分方差'] <= 15 and r['红线率'] < 0.15 else "❌ 拒绝", axis=1
     )
+    st.dataframe(summary.style.highlight_max(axis=0, subset=['μ_逻辑得分']), use_container_width=True)
 
-    # 显示汇总表并高亮最高分
-    st.dataframe(summary_df.style.highlight_max(axis=0, subset=['得分均值']), use_container_width=True)
-
-    # 6. 详细明细展示
+    # B. 详细审计明细 (展示得分与红线的分层)
     st.divider()
-    st.subheader("📝 详细审计流水")
-    st.write("点击列头可进行排序筛选：")
-    st.dataframe(df[['解集ID', '测试轮次', '难度', '审计得分', '审计结果', '详细理由']], use_container_width=True)
+    st.subheader("🔍 详细审计明细 (前100条)")
+    display_cols = ['解集ID', '测试轮次', '难度', '逻辑得分', '红线详情', '审计结果', '得分构成', '最终结论理由']
+    st.dataframe(df[display_cols].head(100), use_container_width=True)
 
-    # 7. 下载报告
+    # C. 数据导出
     csv = df.to_csv(index=False).encode('utf_8_sig')
-    st.download_button("📥 下载完整审计报告 (CSV)", csv, "audit_report.csv", "text/csv")
+    st.download_button("📥 下载完整审计报告", csv, "Audit_Report.csv", "text/csv")
 
 else:
-    st.info("👋 欢迎！请在左侧侧边栏上传您的数据文件开始审计。")
+    st.info("请在左侧上传数据文件。系统将根据 初始分60 进行逻辑打分，并独立扫描红线。")
