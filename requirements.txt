@@ -2,3 +2,6 @@ streamlit
 pandas
 openpyxl
 numpy
+pandas
+matplotlib
+openpyxl
