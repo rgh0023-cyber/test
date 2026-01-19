@@ -3,8 +3,8 @@ import pandas as pd
 import numpy as np
 
 # 1. 页面基本配置
-st.set_page_config(page_title="Tripeaks 审计系统 V1.5.1", layout="wide")
-st.title("🎴 Tripeaks 关卡体验自动化审计系统 V1.5.1")
+st.set_page_config(page_title="Tripeaks 审计系统 V1.5.2", layout="wide")
+st.title("🎴 Tripeaks 关卡体验自动化审计系统 V1.5.2")
 
 # --- 核心统计函数 ---
 def calculate_trimmed_stats(series, trim_percentage):
@@ -19,8 +19,8 @@ def calculate_trimmed_stats(series, trim_percentage):
 # --- 核心审计引擎 ---
 def audit_engine(row, init_score):
     try:
-        seq_str = str(row['全部连击（每张手牌的连击数）'])
-        seq = [int(x.strip()) for x in seq_str.split(',') if x.strip() != ""]
+        seq_raw = str(row['全部连击（每张手牌的连击数）'])
+        seq = [int(x.strip()) for x in seq_raw.split(',') if x.strip() != ""]
         desk_init = row['初始桌面牌']
         difficulty = row['难度']
         actual_result = str(row['实际结果'])
@@ -83,7 +83,7 @@ def audit_engine(row, init_score):
     status = "通过" if not red_tags and score >= 50 else "拒绝"
     return score, status, red_label, " | ".join(reasons), c1, c2, c3, relay, f1, f2
 
-# --- 2. 侧边栏：参数与文件上传 ---
+# --- 2. 侧边栏 ---
 with st.sidebar:
     st.header("⚙️ 全局配置")
     init_val = st.slider("初始基准分", 0, 100, 60)
@@ -98,7 +98,7 @@ if uploaded_file:
         results = df.apply(lambda r: pd.Series(audit_engine(r, init_val)), axis=1)
         df[['得分', '审计结果', '红线详情', '构成', 'c1', 'c2', 'c3', '接力', 'f1', 'f2']] = results
 
-    # B. 顶层聚合排行榜
+    # B. 聚合排行榜
     st.subheader(f"📊 解集排行榜 (截断比例: {trim_val}%)")
     summary = []
     for (jid, diff), gp in df.groupby(['解集ID', '难度']):
@@ -106,34 +106,48 @@ if uploaded_file:
         red_rate = (gp['红线详情'] != "无").mean()
         summary.append({
             "解集ID": jid, "难度": diff, "μ_截断均值": t_mean, "σ2_截断方差": t_var, "红线率": red_rate,
-            "3级均": gp['c3'].mean(), "L2投喂均": gp['f2'].mean(), "接力均": gp['接力'].mean(),
+            "3级均": gp['c3'].mean(), "2级均": gp['c2'].mean(), "1级均": gp['c1'].mean(),
+            "L2投喂均": gp['f2'].mean(), "接力均": gp['接力'].mean(),
             "准入": "✅ 准入" if t_mean >= 50 and t_var <= 15 and red_rate < 0.15 else "❌ 拒绝"
         })
     sum_df = pd.DataFrame(summary)
     st.dataframe(sum_df.style.background_gradient(cmap='RdYlGn', subset=['μ_截断均值']).format({"红线率":"{:.1%}", "μ_截断均值":"{:.2f}", "σ2_截断方差":"{:.2f}"}), use_container_width=True)
 
-    # C. 【新增】动态筛选器交互区
+    # C. 增强型筛选器交互区
     st.divider()
-    st.subheader("🔍 结果筛选器")
-    c1, c2, c3 = st.columns(3)
+    st.subheader("🔍 高级结果筛选器")
     
-    with c1:
+    # 第一排筛选：状态、难度、红线
+    r1_c1, r1_c2, r1_c3 = st.columns([2, 2, 1])
+    with r1_c1:
         f_status = st.multiselect("审计状态", options=df['审计结果'].unique(), default=df['审计结果'].unique())
-    with c2:
+    with r1_c2:
         f_diff = st.multiselect("难度选择", options=sorted(df['难度'].unique()), default=sorted(df['难度'].unique()))
-    with c3:
-        show_red_only = st.checkbox("仅查看命中红线的轮次")
+    with r1_c3:
+        show_red_only = st.checkbox("仅看红线轮次")
 
-    # 执行筛选逻辑
-    filtered_df = df[(df['审计结果'].isin(f_status)) & (df['难度'].isin(f_diff))]
+    # 第二排筛选：解集ID (牌集ID)
+    all_jids = sorted(df['解集ID'].unique())
+    f_jids = st.multiselect("牌集 ID 筛选", options=all_jids, default=all_jids, help="支持多选或搜索特定ID")
+
+    # 执行综合筛选逻辑
+    mask = (df['审计结果'].isin(f_status)) & (df['难度'].isin(f_diff)) & (df['解集ID'].isin(f_jids))
+    filtered_df = df[mask]
     if show_red_only:
         filtered_df = filtered_df[filtered_df['红线详情'] != "无"]
 
-    # D. 明细展示
+    # D. 明细展示 (包含原始序列字段)
     st.write(f"当前筛选条件下共有 **{len(filtered_df)}** 条记录：")
-    st.dataframe(filtered_df[['解集ID', '难度', '实际结果', '得分', '审计结果', '红线详情', '构成']], use_container_width=True)
+    
+    # 调整列顺序，将原始序列放到显眼位置
+    display_cols = [
+        '解集ID', '难度', '实际结果', '得分', '审计结果', '红线详情', 
+        '全部连击（每张手牌的连击数）', '构成'
+    ]
+    
+    st.dataframe(filtered_df[display_cols], use_container_width=True)
 
-    # E. 下载
-    st.download_button("📥 导出审计结果", filtered_df.to_csv(index=False).encode('utf_8_sig'), "Audit_Filtered.csv")
+    # E. 导出
+    st.download_button("📥 导出筛选后的审计结果", filtered_df.to_csv(index=False).encode('utf_8_sig'), "Audit_Filtered_Detail.csv")
 else:
     st.info("💡 请上传数据以激活审计面板。")
