@@ -119,4 +119,9 @@ if uploaded_file:
     st.subheader("📊 解集最终准入判定排行")
     sum_df = pd.DataFrame(summary)
     st.dataframe(sum_df.style.applymap(lambda x: 'color: red' if '❌' in str(x) else 'color: green', subset=['判定结论'])
-                 .format({"红线率":"{:.1%}",
+                 .format({"红线率":"{:.1%}", "μ_截断均值":"{:.2f}", "CV":"{:.3f}", "σ2":"{:.2f}"}), 
+                 use_container_width=True)
+
+    st.divider()
+    st.subheader("🔍 单局得分流水")
+    st.dataframe(df[['解集ID', '难度', '得分', '红线判定', '全部连击（每张手牌的连击数）']], use_container_width=True)
