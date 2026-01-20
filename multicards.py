@@ -180,4 +180,28 @@ if uploaded_files:
             row = {"初始手牌数": h_v, "牌集总数": total_unique_jid, "✅ 总通过数(去重)": total_pass_jid, 
                    "资源覆盖率": total_pass_jid / total_unique_jid if total_unique_jid > 0 else 0}
             for d in sorted(df_fact['难度'].unique()):
-                row[f"难度{d}通过"] = diff_pass.get(d,
+                row[f"难度{d}通过"] = diff_pass.get(d, 0)
+            summary_rows.append(row)
+        
+        st.dataframe(pd.DataFrame(summary_rows).style.format({"资源覆盖率":"{:.1%}"}), use_container_width=True)
+
+        # === 4.2 牌集风险明细排行 ===
+        st.divider()
+        st.subheader("🎯 牌集风险明细排行")
+        f_h = st.multiselect("手牌维度", sorted(df_fact['初始手牌'].unique()), default=sorted(df_fact['初始手牌'].unique()))
+        f_s = st.radio("判定过滤", ["全部", "通过", "拒绝"], horizontal=True)
+
+        view_df = df_fact[df_fact['初始手牌'].isin(f_h)].copy()
+        if f_s == "通过": view_df = view_df[view_df['is_pass'] == 1]
+        elif f_s == "拒绝": view_df = view_df[view_df['is_pass'] == 0]
+
+        # 格式化展示
+        st.dataframe(view_df.drop(columns=['is_pass']).style.applymap(
+            lambda x: 'color: #ff4b4b' if '❌' in str(x) else 'color: #008000', subset=['判定结论']
+        ).format({
+            "μ_均值":"{:.2f}", "σ²_方差":"{:.2f}", "CV":"{:.3f}",
+            "总红线率":"{:.1%}", "数值崩坏率":"{:.1%}", "自动化率":"{:.1%}", 
+            "逻辑违逆率":"{:.1%}", "爆发集中率":"{:.1%}"
+        }), use_container_width=True)
+
+        st.info(f"📊 数据核查：当前明细表共有 {view_df[view_df['is_pass']==1].shape[0]} 行通过记录。")
