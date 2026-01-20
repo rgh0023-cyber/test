@@ -85,4 +85,106 @@ def audit_engine(row, col_map, base_init_score):
     red_tags = []
     if max(seq) >= desk_init * 0.4: red_tags.append("数值崩坏")
     if red_auto: red_tags.append("自动化局")
-    if (diff <=
+    if (diff <= 30 and "失败" in actual) or (diff >= 40 and "胜利" in actual): red_tags.append("逻辑违逆")
+    
+    return score, ",".join(red_tags) if red_tags else "通过", c1, c2, c3, relay, f1, f2
+
+# --- 侧边栏 ---
+with st.sidebar:
+    st.header("⚙️ 审计全局参数")
+    base_score = st.slider("审计初始分 (Base)", 0, 100, 60)
+    mu_limit = st.slider("及格门槛 (μ)", 0, 100, 70)
+    st.divider()
+    trim_val = st.slider("截断比例 (%)", 0, 30, 15)
+    cv_limit = st.slider("最大 CV (稳定性)", 0.05, 0.50, 0.20)
+    var_limit = st.slider("最大方差保护", 10, 100, 25)
+    uploaded_files = st.file_uploader("📂 上传多个数据 (xlsx/csv)", type=["xlsx", "csv"], accept_multiple_files=True)
+
+# --- 主计算流 ---
+if uploaded_files:
+    dfs = []
+    for f in uploaded_files:
+        try:
+            if f.name.endswith('.xlsx'): curr_df = pd.read_excel(f)
+            else:
+                raw = f.read(); enc = chardet.detect(raw)['encoding'] or 'utf-8'
+                curr_df = pd.read_csv(io.BytesIO(raw), encoding=enc)
+            curr_df['源文件'] = f.name
+            dfs.append(curr_df)
+        except Exception as e: st.error(f"加载 {f.name} 失败: {e}")
+
+    if dfs:
+        df = pd.concat(dfs, ignore_index=True)
+        # 建立列名映射图 (解决 KeyError 核心)
+        col_map = {
+            'seq': get_col_safe(df, ['全部连击', 'ComboSequence']),
+            'desk': get_col_safe(df, ['初始桌面牌', 'InitialDesk']),
+            'diff': get_col_safe(df, ['难度', 'Difficulty']),
+            'act': get_col_safe(df, ['实际结果', 'Result']),
+            'hand': get_col_safe(df, ['初始手牌', 'HandCards']),
+            'jid': get_col_safe(df, ['解集ID', 'SetID'])
+        }
+
+        if None in col_map.values():
+            st.error(f"检测到关键列缺失，请检查文件。当前映射结果：{col_map}")
+        else:
+            with st.spinner('算法对比审计计算中...'):
+                res = df.apply(lambda r: pd.Series(audit_engine(r, col_map, base_score)), axis=1)
+                df[['得分', '红线判定', 'c1', 'c2', 'c3', '接力', 'f1', 'f2']] = res
+
+            # === 1. 总体统计看板 (需求2.1) ===
+            st.header("📊 算法策略看板")
+            strat_list = []
+            h_col, j_col = col_map['hand'], col_map['jid']
+            for h_val, gp_h in df.groupby(h_col):
+                total_jids = gp_h[j_col].nunique()
+                pass_jids = 0
+                for jid, gp in gp_h.groupby(j_col):
+                    mu, var, cv = calculate_advanced_stats(gp['得分'], trim_val)
+                    red_rate = (gp['红线判定'] != "通过").mean()
+                    if mu >= mu_limit and (cv <= cv_limit or var <= var_limit) and red_rate < 0.15:
+                        pass_jids += 1
+                strat_list.append({
+                    "初始手牌数": h_val, "牌集总数": total_jids, "✅ 通过牌集": pass_jids,
+                    "通过率": pass_jids/total_jids if total_jids>0 else 0,
+                    "审计均分": gp_h['得分'].mean(), "红线率": (gp_h['红线判定'] != "通过").mean()
+                })
+            st.dataframe(pd.DataFrame(strat_list).style.format({"通过率":"{:.1%}", "红线率":"{:.1%}", "审计均分":"{:.2f}"}).background_gradient(cmap='RdYlGn', subset=['通过率']), use_container_width=True)
+
+            # === 2. 详情排行与层级结论 ===
+            st.divider()
+            st.subheader("🎯 牌集明细排行")
+            
+            # 筛选器复活 (需求2.2)
+            c1, c2 = st.columns([1, 2])
+            with c1: f_hands = st.multiselect("手牌数维度筛选", sorted(df[h_col].unique()), default=sorted(df[h_col].unique()))
+            with c2: f_status = st.radio("判定过滤", ["全部", "通过", "拒绝"], horizontal=True)
+
+            detailed_sum = []
+            for (h_v, jid, diff), gp in df.groupby([h_col, j_col, col_map['diff']]):
+                if h_v not in f_hands: continue
+                mu, var, cv = calculate_advanced_stats(gp['得分'], trim_val)
+                red_mask = gp['红线判定'] != "通过"
+                red_rate = red_mask.mean()
+                
+                # 层级拒绝理由 (需求核心)
+                reason = "✅ 通过"
+                if red_rate >= 0.15: reason = f"❌ 红线拒绝 ({gp[red_mask]['红线判定'].mode()[0]})"
+                elif mu < mu_limit: reason = "❌ 分值拒绝"
+                elif cv > cv_limit: reason = "❌ 稳定性拒绝"
+                
+                tag = "通过" if "✅" in reason else "拒绝"
+                if f_status == "全部" or f_status == tag:
+                    detailed_sum.append({
+                        "手牌数": h_v, "解集ID": jid, "难度": diff, "μ_均值": mu, "CV": cv, 
+                        "判定结论": reason, "3级枯竭均": gp['c3'].mean(), "红线率": red_rate
+                    })
+            
+            if detailed_sum:
+                st.dataframe(pd.DataFrame(detailed_sum).style.applymap(lambda x: 'color: #ff4b4b' if '❌' in str(x) else 'color: #008000', subset=['判定结论'])
+                             .format({"μ_均值":"{:.2f}", "CV":"{:.3f}", "红线率":"{:.1%}", "3级枯竭均":"{:.1f}"}), use_container_width=True)
+
+            # === 3. 跑关流水追踪 ===
+            st.divider()
+            st.subheader("🔍 跑关详细流水")
+            st.dataframe(df[df[h_col].isin(f_hands)][['源文件', h_col, j_col, '得分', '红线判定', 'c3', '接力', col_map['seq']]], use_container_width=True)
